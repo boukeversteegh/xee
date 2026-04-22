@@ -79,13 +79,6 @@ impl<'a> ExplicitWhitespace<'a> {
     ) -> Option<(Token<'a>, Span)> {
         let (next_token, next_span) = self.base.peek()?;
         match next_token {
-            Ok(Token::NCName(local_name)) => {
-                let span = span.start..next_span.end;
-                Some((
-                    Token::URIQualifiedName(URIQualifiedName { uri, local_name }),
-                    span,
-                ))
-            }
             Ok(Token::Asterisk) => {
                 let span = span.start..next_span.end;
                 Some((
@@ -93,8 +86,17 @@ impl<'a> ExplicitWhitespace<'a> {
                     span,
                 ))
             }
+            Ok(next_token) => {
+                // A URIQualifiedName has an NCName as the local part, which per
+                // the XPath 3.1 spec includes keyword tokens (see reserved.rs).
+                let local_name = next_token.ncname()?;
+                let span = span.start..next_span.end;
+                Some((
+                    Token::URIQualifiedName(URIQualifiedName { uri, local_name }),
+                    span,
+                ))
+            }
             Err(_) => Some((Token::Error, span.clone())),
-            _ => None,
         }
     }
 
@@ -401,5 +403,37 @@ mod tests {
             ))
         );
         assert_eq!(iter.next(), None);
+    }
+
+    // A URIQualifiedName's local part is an NCName, which per XPath 3.1 may be
+    // spelled as any keyword. For example, `Q{uri}if` must be combined into a
+    // single URIQualifiedName, not split into a BracedURILiteral followed by
+    // Token::If.
+    #[test]
+    fn test_uri_qualified_name_with_keyword_local_names() {
+        let cases = [
+            ("Q{http://e}if", "if", 13),
+            ("Q{http://e}then", "then", 15),
+            ("Q{http://e}else", "else", 15),
+            ("Q{http://e}child", "child", 16),
+            ("Q{http://e}and", "and", 14),
+            ("Q{http://e}or", "or", 13),
+            ("Q{http://e}function", "function", 19),
+            ("Q{http://e}element", "element", 18),
+            ("Q{}if", "if", 5),
+        ];
+        for (input, local_name, len) in cases {
+            let uri = &input[2..input.find('}').unwrap()];
+            let mut iter = ExplicitWhitespace::from_str(input);
+            assert_eq!(
+                iter.next(),
+                Some((
+                    Token::URIQualifiedName(URIQualifiedName { uri, local_name }),
+                    0..len
+                )),
+                "failed for input: {input}"
+            );
+            assert_eq!(iter.next(), None, "unexpected trailing token for: {input}");
+        }
     }
 }
